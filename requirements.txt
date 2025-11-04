@@ -1,0 +1,17 @@
+# JAX for vectorized game environment
+jax>=0.4.20
+jaxlib>=0.4.20
+
+# For numerical operations
+numpy>=1.24.0
+
+# Testing
+pytest>=7.4.0
+pytest-xdist>=3.3.0  # For parallel test execution
+
+# Type checking
+mypy>=1.5.0
+
+# For future Nash equilibrium training with SF-OCR
+chex>=0.1.83  # JAX testing and assertions
+optax>=0.1.7  # Optimization library for JAX
