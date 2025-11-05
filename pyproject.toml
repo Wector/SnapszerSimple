@@ -1,0 +1,19 @@
+[project]
+name = "snapszer-simple"
+version = "0.1.0"
+description = "Hungarian Snapszer card game implementation in Python and JAX"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20.0",
+    "jax>=0.4.0",
+    "jaxlib>=0.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
