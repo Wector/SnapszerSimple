@@ -217,8 +217,7 @@ def trick_winner(lead_cid: jnp.ndarray, reply_cid: jnp.ndarray, trump: jnp.ndarr
 @jax.jit
 def strict_rules_active(state: SnapszerState) -> jnp.ndarray:
     """Check if strict follow rules are active."""
-    talon_status = state.closed | (state.stock_idx >= len(state.stock))
-    return talon_status & ~state.trump_taken
+    return state.closed | (state.trump_taken & (state.stock_idx >= len(state.stock)))
 
 
 @jax.jit
@@ -246,7 +245,7 @@ def can_exchange_trump_jack(state: SnapszerState, player: jnp.ndarray) -> jnp.nd
         ~state.trump_taken &
         (state.trick_cards[0] == -1) &
         (state.leader == player) &
-        (higher_count >= CLOSE_MIN_ABOVE_TRUMP)
+        (state.stock_idx < len(state.stock))
     )
 
 
@@ -257,34 +256,30 @@ def legal_reply_cards_mask(hand_mask: jnp.ndarray, hand_size: jnp.ndarray, lead_
     lead_r = cid_rank(lead_cid)
     lead_strength = RANK_STRENGTH[lead_r]
 
-    # Build masks for all possible cards
-    def check_card(cid):
-        has_card = mask_contains(hand_mask, cid)
-        card_suit = cid_suit(cid)
-        card_rank = cid_rank(cid)
-        card_strength = RANK_STRENGTH[card_rank]
-
-        same_suit = card_suit == lead_s
-        beats = same_suit & (card_strength > lead_strength)
-        is_trump = card_suit == trump
-
-        return has_card, same_suit, beats, is_trump
-
     all_cids = jnp.arange(NUM_CARDS, dtype=jnp.int32)
-    has_card, same_suit, beating, is_trump = jax.vmap(check_card)(all_cids)
+    card_suits = jax.vmap(cid_suit)(all_cids)
+    card_ranks = jax.vmap(cid_rank)(all_cids)
+    card_strengths = RANK_STRENGTH[card_ranks]
+
+    has_card = jax.vmap(lambda cid: mask_contains(hand_mask, cid))(all_cids)
+    same_suit = card_suits == lead_s
+    beating = same_suit & (card_strengths > lead_strength)
+    is_trump = card_suits == trump
 
     # Count what we have
     has_same_suit = jnp.any(has_card & same_suit)
     has_beating = jnp.any(has_card & beating)
     has_trumps = jnp.any(has_card & is_trump)
 
-    # Determine legal cards using branchless logic
-    # Priority: beating cards > same suit > trumps > all cards
-    legal = jnp.where(
-        has_same_suit,
-        jnp.where(has_beating, beating, same_suit),
-        jnp.where(has_trumps, is_trump, has_card)
-    )
+    # Determine legal cards using conditional logic
+    def compute_legal():
+        def same_suit_case(_):
+            return jax.lax.cond(has_beating, lambda _: beating, lambda _: same_suit, None)
+        def no_same_suit_case(_):
+            return jax.lax.cond(has_trumps, lambda _: is_trump, lambda _: has_card, None)
+        return jax.lax.cond(has_same_suit, same_suit_case, no_same_suit_case, None)
+
+    legal = compute_legal()
 
     return legal
 
@@ -308,7 +303,7 @@ def legal_actions_mask(state: SnapszerState) -> jax.Array:
     can_close = (
         (~state.closed) &
         (~state.trump_taken) &
-        (state.stock_idx < len(state.stock)) &
+        ((len(state.stock) - state.stock_idx) >= CLOSE_MIN_ABOVE_TRUMP) &
         (state.leader == me) &
         (state.trick_cards[0] == -1)
     )
