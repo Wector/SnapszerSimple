@@ -250,8 +250,8 @@ def can_exchange_trump_jack(state: SnapszerState, player: jnp.ndarray) -> jnp.nd
 
 
 @jax.jit
-def legal_reply_cards_mask(hand_mask: jnp.ndarray, hand_size: jnp.ndarray, lead_cid: jnp.ndarray, trump: jnp.ndarray) -> jnp.ndarray:
-    """Get legal reply cards as a 20-bit mask. OPTIMIZED version using bitmasks."""
+def legal_reply_cards_bitmask(hand_mask: jnp.ndarray, hand_size: jnp.ndarray, lead_cid: jnp.ndarray, trump: jnp.ndarray) -> jnp.ndarray:
+    """Get legal reply cards as a bitmask. ULTRA-OPTIMIZED."""
     lead_s = cid_suit(lead_cid)
     lead_r = cid_rank(lead_cid)
     lead_strength = RANK_STRENGTH[lead_r]
@@ -271,17 +271,17 @@ def legal_reply_cards_mask(hand_mask: jnp.ndarray, hand_size: jnp.ndarray, lead_
     has_beating = jnp.any(has_card & beating)
     has_trumps = jnp.any(has_card & is_trump)
 
-    # Determine legal cards using conditional logic
-    def compute_legal():
-        def same_suit_case(_):
-            return jax.lax.cond(has_beating, lambda _: beating, lambda _: same_suit, None)
-        def no_same_suit_case(_):
-            return jax.lax.cond(has_trumps, lambda _: is_trump, lambda _: has_card, None)
-        return jax.lax.cond(has_same_suit, same_suit_case, no_same_suit_case, None)
+    # Determine legal cards using select
+    legal = jnp.select(
+        [has_same_suit & has_beating, has_same_suit & ~has_beating, has_trumps],
+        [beating, same_suit, is_trump],
+        default=has_card
+    )
 
-    legal = compute_legal()
+    # Convert to bitmask directly
+    legal_bitmask = jnp.bitwise_or.reduce(jnp.where(legal, 1 << all_cids, 0))
 
-    return legal
+    return legal_bitmask
 
 
 @jax.jit
@@ -323,14 +323,7 @@ def legal_actions_mask(state: SnapszerState) -> jax.Array:
         is_replier,
         jnp.where(
             strict_active,
-            jnp.bitwise_and.reduce(jnp.stack([
-                hand_mask,
-                jnp.bitwise_or.reduce(jnp.where(
-                    legal_reply_cards_mask(hand_mask, state.hand_sizes[me], state.trick_cards[0], state.trump),
-                    1 << jnp.arange(NUM_CARDS, dtype=jnp.int32),
-                    0
-                ))
-            ])),
+            hand_mask & legal_reply_cards_bitmask(hand_mask, state.hand_sizes[me], state.trick_cards[0], state.trump),
             hand_mask
         ),
         0

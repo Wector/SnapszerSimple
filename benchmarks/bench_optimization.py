@@ -154,12 +154,14 @@ def main():
     print("="*60)
     print("""
 Key Optimizations:
-1. JAX native RNG instead of MT19937 (~70x faster initialization)
-2. Bitmask-based legal actions (~4x faster)
-3. Unsorted hands (slightly faster insert/remove)
+1. JAX native RNG instead of MT19937 (~40x faster initialization)
+2. Bitmask-based legal actions with jnp.select (~4x faster)
+3. Unsorted hands with O(1) insert/remove operations
 4. Reduced state size (removed 80-byte deck field)
+5. Direct bitmask computation for legal replies
 
-Overall: ~3-4x faster for full game simulation
+Overall: ~2-4x faster for full game simulation
+Batched execution: ~20x faster
 
 Note: Optimized version does NOT maintain parity with base
 implementation due to different RNG. Use for training, not testing.
