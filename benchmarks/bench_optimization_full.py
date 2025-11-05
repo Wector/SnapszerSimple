@@ -3,8 +3,8 @@
 import time
 import jax
 import jax.numpy as jnp
-import snapszer_jax as jax_orig
-import snapszer_jax_optimized as jax_opt
+from snapszer import jax_impl as jax_orig
+from snapszer import jax_optimized as jax_opt
 
 
 def benchmark_single(n_games=100):

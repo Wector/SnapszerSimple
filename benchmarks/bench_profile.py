@@ -2,7 +2,7 @@
 
 import jax
 import jax.numpy as jnp
-import snapszer_jax as jax_impl
+from snapszer import jax_impl
 import time
 
 

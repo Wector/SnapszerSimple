@@ -7,8 +7,8 @@ to the base Python implementation for the same seeds and action sequences.
 import numpy as np
 import jax.numpy as jnp
 from typing import List, Tuple
-import snapszer_base as base
-import snapszer_jax as jax_impl
+from snapszer import base
+from snapszer import jax_impl
 
 
 def compare_hands(base_hand: List[int], jax_hand: jnp.ndarray, jax_size: int, player: int) -> Tuple[bool, str]:

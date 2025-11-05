@@ -1,8 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "snapszer-simple"
+name = "snapszer"
 version = "0.1.0"
-description = "Hungarian Snapszer card game implementation in Python and JAX"
-requires-python = ">=3.8"
+description = "Hungarian Snapszer card game with JAX implementation for Nash Equilibrium training"
+authors = [{name = "Wector"}]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
 dependencies = [
     "numpy>=1.20.0",
     "jax>=0.4.0",
@@ -10,10 +17,31 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gpu = [
+    "jax[cuda12]>=0.4.0",
+]
 dev = [
     "pytest>=7.0.0",
+    "pytest-benchmark>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
 ]
 
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I"]
+ignore = ["E501"]

@@ -2,8 +2,8 @@
 
 import numpy as np
 import jax.numpy as jnp
-import snapszer_base as base
-import snapszer_jax as jax_impl
+from snapszer import base
+from snapszer import jax_impl
 
 def test_mt_extract():
     """Test MT19937 value extraction."""

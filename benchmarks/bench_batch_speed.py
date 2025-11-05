@@ -3,7 +3,7 @@
 import time
 import jax
 import jax.numpy as jnp
-import snapszer_jax as jax_impl
+from snapszer import jax_impl
 
 
 def test_single_game(seed: int = 42, max_steps: int = 100):
