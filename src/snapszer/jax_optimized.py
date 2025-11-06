@@ -30,7 +30,7 @@ EXCHANGE_TRUMP_ACTION = 20
 CLOSE_TALON_ACTION = 21
 TOTAL_ACTIONS = 22
 CLOSE_MIN_ABOVE_TRUMP = 3
-OBSERVATION_SIZE = 80
+OBSERVATION_SIZE = 101  # 20+4+20+3+2+2+20+20+2+4+4
 MAX_HAND_SIZE = 10
 
 
@@ -587,3 +587,76 @@ def returns(state: SnapszerState) -> Tuple[float, float]:
         return (0.0, 0.0)
     diff = state.game_points[0] - state.game_points[1]
     return (float(diff), float(-diff))
+
+
+@jax.jit
+def observation_tensor(state: SnapszerState, player: int) -> jax.Array:
+    """
+    Create observation tensor for player.
+
+    Encodes all information visible to the player:
+    - Own hand (20 bits as one-hot)
+    - Trump suit (4 bits one-hot)
+    - Trump card (20 bits one-hot, or all zeros if taken)
+    - Public state (stock_idx, closed, trump_taken, points, tricks_won, etc.)
+    - Trick cards
+    - Marriages scored
+
+    Returns flat array of features.
+    """
+    player = jnp.int32(player)
+    opponent = 1 - player
+
+    # Own hand (20 bits) - extract bits from bitmask using vectorized operations
+    card_indices = jnp.arange(NUM_CARDS, dtype=jnp.int32)
+    hand_bits = ((state.hand_masks[player] >> card_indices) & 1).astype(jnp.float32)
+
+    # Trump suit (4 bits one-hot) - vectorized comparison
+    suit_indices = jnp.arange(NUM_SUITS, dtype=jnp.int32)
+    trump_bits = (state.trump == suit_indices).astype(jnp.float32)
+
+    # Trump card (20 bits one-hot, or all zeros if taken) - vectorized
+    trump_card_one_hot = (state.trump_card == card_indices).astype(jnp.float32)
+    trump_card_bits = jnp.where(state.trump_taken, 0.0, trump_card_one_hot)
+
+    # Scalar features
+    stock_cards_left = jnp.float32(9 - state.stock_idx)  # stock has 9 cards
+    closed_bit = jnp.float32(state.closed)
+    trump_taken_bit = jnp.float32(state.trump_taken)
+
+    # Points (normalized)
+    my_points = jnp.float32(state.points[player]) / 120.0
+    opp_points = jnp.float32(state.points[opponent]) / 120.0
+
+    # Tricks won
+    my_tricks = jnp.float32(state.tricks_won[player]) / 10.0
+    opp_tricks = jnp.float32(state.tricks_won[opponent]) / 10.0
+
+    # Trick cards (2 cards, 20 bits each one-hot) - vectorized
+    trick_card_0_bits = (state.trick_cards[0] == card_indices).astype(jnp.float32)
+    trick_card_1_bits = (state.trick_cards[1] == card_indices).astype(jnp.float32)
+
+    # Current player and leader
+    is_my_turn = jnp.float32(state.current_player == player)
+    is_leader = jnp.float32(state.leader == player)
+
+    # Marriages scored (2 players × 4 suits) - already arrays
+    my_marriages = state.marriages_scored[player].astype(jnp.float32)
+    opp_marriages = state.marriages_scored[opponent].astype(jnp.float32)
+
+    # Concatenate all features
+    obs = jnp.concatenate([
+        hand_bits,  # 20
+        trump_bits,  # 4
+        trump_card_bits,  # 20
+        jnp.array([stock_cards_left, closed_bit, trump_taken_bit]),  # 3
+        jnp.array([my_points, opp_points]),  # 2
+        jnp.array([my_tricks, opp_tricks]),  # 2
+        trick_card_0_bits,  # 20
+        trick_card_1_bits,  # 20
+        jnp.array([is_my_turn, is_leader]),  # 2
+        my_marriages,  # 4
+        opp_marriages,  # 4
+    ])
+
+    return obs  # Total: 20+4+20+3+2+2+20+20+2+4+4 = 101 features
