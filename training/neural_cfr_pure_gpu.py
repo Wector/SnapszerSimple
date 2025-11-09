@@ -153,42 +153,105 @@ class PureGPUCFRTrainer:
 
         return final_params, final_opt_state
 
+    def _play_game_gpu(self, params, rng_key):
+        """
+        Play ONE full game on GPU using network policy and return outcome.
+        Returns (initial_obs_p0, initial_mask_p0, initial_obs_p1, initial_mask_p1, returns)
+        """
+        state = game.new_game(rng_key)
+
+        # Store initial state for both players
+        init_obs_p0 = game.observation_tensor(state, 0)
+        init_mask_p0 = game.legal_actions_mask(state)
+        init_obs_p1 = game.observation_tensor(state, 1)
+        init_mask_p1 = game.legal_actions_mask(state)
+
+        # Play game to completion (on GPU, no Python loops)
+        def game_step(state_carry, _):
+            state = state_carry
+
+            # If terminal, return state unchanged
+            is_terminal = state.terminal
+
+            def play_step(s):
+                player = s.current_player
+                obs = game.observation_tensor(s, player)
+                mask = game.legal_actions_mask(s)
+                obs_batch = jnp.expand_dims(obs, 0)
+                mask_batch = jnp.expand_dims(mask, 0)
+                strategy = self.network.apply(params, obs_batch, mask_batch)[0]
+                action_key = jax.random.fold_in(rng_key, jnp.sum(obs).astype(jnp.int32))
+                action = jax.random.categorical(action_key, jnp.log(strategy + 1e-10))
+                return game.apply_action(s, action)
+
+            next_state = jax.lax.cond(is_terminal, lambda s: s, play_step, state)
+            return next_state, None
+
+        # Run game for max 100 steps
+        final_state, _ = jax.lax.scan(game_step, state, None, length=100)
+        returns = game.returns(final_state)
+
+        return init_obs_p0, init_mask_p0, init_obs_p1, init_mask_p1, returns
+
     def _generate_and_train_step(self, params, opt_state, rng_key):
         """
-        Generate a batch of games and train network - ENTIRELY ON GPU!
-
-        This is a pure JAX function with no CPU operations.
+        Generate a batch of games, play them on GPU, use outcomes for CFR-style learning.
         """
         batch_size = self.config.games_per_batch
 
-        # Split key for games
+        # Split keys for games
         game_keys = jax.random.split(rng_key, batch_size)
 
-        # Generate batch of games (on GPU)
-        batch_new_game = jax.vmap(game.new_game)
-        states = batch_new_game(game_keys)
+        # Play batch of games on GPU and get outcomes
+        obs_p0, masks_p0, obs_p1, masks_p1, returns = jax.vmap(
+            lambda k: self._play_game_gpu(params, k)
+        )(game_keys)
 
-        # Get training data for both players (on GPU)
-        all_obs = []
-        all_masks = []
-        all_targets = []
+        # Unpack returns tuple
+        returns_p0, returns_p1 = returns
 
-        for player in [0, 1]:
-            # Vectorized observation extraction
-            obs = jax.vmap(lambda s: game.observation_tensor(s, player))(states)
-            masks = jax.vmap(game.legal_actions_mask)(states)
+        # Outcome-based CFR: adjust strategies based on who won
+        # Player 0 states
+        outcomes_p0 = returns_p0  # Player 0's returns
+        # If player won (outcome > 0), boost current strategy by 1.2x
+        # If player lost (outcome < 0), move toward uniform (0.7 current + 0.3 uniform)
+        # If draw (outcome = 0), keep current
+        current_strats_p0 = self.network.apply(params, obs_p0, masks_p0)
+        uniform_p0 = masks_p0.astype(jnp.float32) / (jnp.sum(masks_p0, axis=1, keepdims=True) + 1e-10)
 
-            # Get current policy predictions
-            current_strategies = self.network.apply(params, obs, masks)
+        # Compute adjusted targets based on outcomes
+        win_mask_p0 = (outcomes_p0 > 0).astype(jnp.float32).reshape(-1, 1)
+        loss_mask_p0 = (outcomes_p0 < 0).astype(jnp.float32).reshape(-1, 1)
+        draw_mask_p0 = (outcomes_p0 == 0).astype(jnp.float32).reshape(-1, 1)
 
-            all_obs.append(obs)
-            all_masks.append(masks)
-            all_targets.append(current_strategies)
+        target_p0 = (
+            win_mask_p0 * (current_strats_p0 * 1.2) +  # Winning: reinforce
+            loss_mask_p0 * (0.7 * current_strats_p0 + 0.3 * uniform_p0) +  # Losing: explore
+            draw_mask_p0 * current_strats_p0  # Draw: keep
+        )
+        # Renormalize
+        target_p0 = target_p0 / (jnp.sum(target_p0, axis=1, keepdims=True) + 1e-10)
 
-        # Stack all data (still on GPU!)
-        observations = jnp.concatenate(all_obs, axis=0)
-        legal_masks = jnp.concatenate(all_masks, axis=0)
-        target_strategies = jnp.concatenate(all_targets, axis=0)
+        # Player 1 states (same logic)
+        outcomes_p1 = returns_p1
+        current_strats_p1 = self.network.apply(params, obs_p1, masks_p1)
+        uniform_p1 = masks_p1.astype(jnp.float32) / (jnp.sum(masks_p1, axis=1, keepdims=True) + 1e-10)
+
+        win_mask_p1 = (outcomes_p1 > 0).astype(jnp.float32).reshape(-1, 1)
+        loss_mask_p1 = (outcomes_p1 < 0).astype(jnp.float32).reshape(-1, 1)
+        draw_mask_p1 = (outcomes_p1 == 0).astype(jnp.float32).reshape(-1, 1)
+
+        target_p1 = (
+            win_mask_p1 * (current_strats_p1 * 1.2) +
+            loss_mask_p1 * (0.7 * current_strats_p1 + 0.3 * uniform_p1) +
+            draw_mask_p1 * current_strats_p1
+        )
+        target_p1 = target_p1 / (jnp.sum(target_p1, axis=1, keepdims=True) + 1e-10)
+
+        # Combine data from both players
+        observations = jnp.concatenate([obs_p0, obs_p1], axis=0)
+        legal_masks = jnp.concatenate([masks_p0, masks_p1], axis=0)
+        target_strategies = jnp.concatenate([target_p0, target_p1], axis=0)
 
         # Compute loss and gradients (on GPU)
         loss, grads = jax.value_and_grad(

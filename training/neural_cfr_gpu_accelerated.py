@@ -87,97 +87,6 @@ class ReservoirBuffer:
         )
 
 
-@jax.jit
-def play_game_and_collect_data(network_params, rng_key):
-    """
-    Play a full game and collect state-action data.
-    Returns observations, masks, and outcome for advantage computation.
-    """
-    # Generate game
-    game_key = rng_key
-    state = game.new_game(game_key)
-
-    # Collect trajectory
-    max_steps = 100
-    obs_list = []
-    mask_list = []
-    action_list = []
-    player_list = []
-
-    def game_step(carry, _):
-        state, rng, obs_arr, mask_arr, act_arr, player_arr, step = carry
-
-        # Check if terminal
-        is_terminal = state.terminal
-
-        # Get current state info
-        current_player = state.current_player
-        obs = game.observation_tensor(state, current_player)
-        legal_mask = game.legal_actions_mask(state)
-
-        # Get network policy
-        obs_batch = jnp.expand_dims(obs, 0)
-        mask_batch = jnp.expand_dims(legal_mask, 0)
-
-        # Import network here to avoid circular dependency issues
-        from training.policy_network import PolicyNetwork
-        net = PolicyNetwork(hidden_sizes=(1024, 512, 256))
-        strategy = net.apply(network_params, obs_batch, mask_batch)[0]
-
-        # Sample action
-        rng, action_key = jax.random.split(rng)
-        action = jax.random.categorical(action_key, jnp.log(strategy + 1e-10))
-
-        # Store (conditional on not terminal)
-        obs_arr = jnp.where(is_terminal, obs_arr, obs_arr.at[step].set(obs))
-        mask_arr = jnp.where(is_terminal, mask_arr, mask_arr.at[step].set(legal_mask))
-        act_arr = jnp.where(is_terminal, act_arr, act_arr.at[step].set(action))
-        player_arr = jnp.where(is_terminal, player_arr, player_arr.at[step].set(current_player))
-
-        # Apply action (or stay in terminal state)
-        next_state = jax.lax.cond(
-            is_terminal,
-            lambda s, a: s,
-            lambda s, a: game.apply_action(s, a),
-            state,
-            action
-        )
-
-        new_step = jnp.where(is_terminal, step, step + 1)
-
-        return (next_state, rng, obs_arr, mask_arr, act_arr, player_arr, new_step), None
-
-    # Initialize arrays
-    init_obs = jnp.zeros((max_steps, game.OBSERVATION_SIZE))
-    init_mask = jnp.zeros((max_steps, game.TOTAL_ACTIONS), dtype=jnp.bool_)
-    init_act = jnp.zeros(max_steps, dtype=jnp.int32)
-    init_player = jnp.zeros(max_steps, dtype=jnp.int32)
-
-    rng_key, game_rng = jax.random.split(rng_key)
-    (final_state, _, obs_arr, mask_arr, act_arr, player_arr, num_steps), _ = jax.lax.scan(
-        game_step,
-        (state, game_rng, init_obs, init_mask, init_act, init_player, 0),
-        None,
-        length=max_steps
-    )
-
-    # Get final outcome
-    returns = game.returns(final_state)
-
-    return obs_arr, mask_arr, act_arr, player_arr, returns, num_steps
-
-
-@jax.jit
-def generate_cfr_data_batch(network_params, rng_key, batch_size: int):
-    """Generate a batch of games and compute CFR targets."""
-    keys = jax.random.split(rng_key, batch_size)
-
-    # Play batch of games
-    obs_batch, masks_batch, actions_batch, players_batch, returns_batch, steps_batch = jax.vmap(
-        lambda k: play_game_and_collect_data(network_params, k)
-    )(keys)
-
-    return obs_batch, masks_batch, returns_batch, players_batch, steps_batch
 
 
 class GPUCFRLearner:
@@ -214,7 +123,7 @@ class GPUCFRLearner:
         # Metrics
         self.metrics = {
             'iteration': [],
-            'eval_iterations': [],
+            'eval_iterations': [],  # Track which iterations had evaluations
             'win_rate_vs_random': [],
             'avg_loss': [],
             'buffer_size': []
@@ -243,47 +152,65 @@ class GPUCFRLearner:
             print(f"  Avg loss: {avg_loss:.4f} | Buffer: {self.buffer.size:,}")
 
     def _generate_cfr_data_gpu(self):
-        """Generate CFR training data on GPU."""
+        """Generate CFR training data (simplified outcome-based approach)."""
         num_games = self.config.cfr_games_per_iter
-        batch_size = min(500, num_games)  # Process in batches
 
-        for batch_start in range(0, num_games, batch_size):
-            current_batch = min(batch_size, num_games - batch_start)
+        # Play games using current policy and collect data
+        for _ in range(num_games):
+            self.rng_key, game_key = jax.random.split(self.rng_key)
+            state = game.new_game(game_key)
 
-            self.rng_key, batch_key = jax.random.split(self.rng_key)
+            # Play one game and collect states
+            states = []
+            actions = []
+            players = []
 
-            # Generate games on GPU
-            obs_batch, masks_batch, returns_batch, players_batch, steps_batch = generate_cfr_data_batch(
-                self.params, batch_key, current_batch
-            )
+            while not state.terminal:
+                current_player = int(state.current_player)
+                obs = np.array(game.observation_tensor(state, current_player), dtype=np.float32)
+                legal_mask = np.array(game.legal_actions_mask(state), dtype=bool)
 
-            # Convert to CPU and process
-            obs_np = np.array(obs_batch)
-            masks_np = np.array(masks_batch)
-            returns_np = np.array(returns_batch)
-            players_np = np.array(players_batch)
-            steps_np = np.array(steps_batch)
+                # Get network policy
+                obs_batch = jnp.array([obs], dtype=jnp.float32)
+                mask_batch = jnp.array([legal_mask], dtype=jnp.bool_)
+                strategy = self.network.apply(self.params, obs_batch, mask_batch)
+                strategy = np.array(strategy[0])
 
-            # Add to buffer with advantage-based targets
-            for game_idx in range(current_batch):
-                num_steps = int(steps_np[game_idx])
-                for step in range(num_steps):
-                    obs = obs_np[game_idx, step]
-                    mask = masks_np[game_idx, step]
-                    player = int(players_np[game_idx, step])
-                    outcome = returns_np[game_idx, player]
+                # Sample action
+                action = np.random.choice(game.TOTAL_ACTIONS, p=strategy)
 
-                    # Simple advantage: positive outcome = boost this action
-                    # This is simplified CFR using outcome as advantage
-                    strategy = np.where(mask, 1.0, 0.0)
-                    strategy = strategy / (np.sum(strategy) + 1e-10)
+                # Store
+                states.append((obs, legal_mask, strategy))
+                actions.append(action)
+                players.append(current_player)
 
-                    # Skew toward positive outcomes
-                    if outcome > 0:
-                        strategy = strategy * 1.5
-                    strategy = strategy / (np.sum(strategy) + 1e-10)
+                # Apply action
+                state = game.apply_action(state, action)
 
-                    self.buffer.add(obs, mask, strategy)
+            # Get outcome
+            returns = np.array(game.returns(state))
+
+            # Add states to buffer with outcome-based weighting
+            for (obs, mask, strategy), player in zip(states, players):
+                outcome = returns[player]
+
+                # Adjust strategy based on outcome
+                if outcome > 0:
+                    # Winning - reinforce current strategy
+                    adjusted_strategy = strategy * 1.2
+                elif outcome < 0:
+                    # Losing - explore more uniformly
+                    uniform = np.where(mask, 1.0, 0.0)
+                    uniform = uniform / (np.sum(uniform) + 1e-10)
+                    adjusted_strategy = 0.7 * strategy + 0.3 * uniform
+                else:
+                    # Draw - keep current strategy
+                    adjusted_strategy = strategy
+
+                # Normalize
+                adjusted_strategy = adjusted_strategy / (np.sum(adjusted_strategy) + 1e-10)
+
+                self.buffer.add(obs, mask, adjusted_strategy)
 
     def _train_network(self) -> float:
         """Train network on buffered data."""

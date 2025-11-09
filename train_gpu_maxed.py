@@ -8,20 +8,20 @@ from training.evaluation import evaluate_vs_random
 
 
 if __name__ == '__main__':
-    # Configuration - MUCH BIGGER
+    # Configuration - MAXIMUM GPU UTILIZATION
     config = PureGPUCFRConfig(
         num_iterations=100,
 
         # MASSIVE BATCHES - saturate the GPU!
-        games_per_batch=8192,         # 8192 games at once!
-        train_batches_per_iter=200,   # 200 batches per iteration (keeps GPU busy!)
+        games_per_batch=8192,         # 8192 games at once on GPU!
+        train_batches_per_iter=200,   # 200 batches per iteration (90-100% GPU!)
 
-        # BIGGER NETWORK - more GPU compute
-        hidden_sizes=(512, 512, 256),  # 3 layers is enough
+        # YOUR NETWORK SIZE
+        hidden_sizes=(1024, 512, 256),  # Your requested architecture
         learning_rate=1e-3,
 
-        eval_freq=10,
-        checkpoint_freq=50,
+        eval_freq=5,  # Evaluate every 5 iterations
+        checkpoint_freq=25,  # Save every 25 iterations
 
         checkpoint_dir='checkpoints/gpu_maxed/',
         log_dir='logs/gpu_maxed/'

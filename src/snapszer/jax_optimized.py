@@ -582,11 +582,23 @@ def _apply_action_impl(state: SnapszerState, action: jnp.ndarray) -> SnapszerSta
 
 
 def returns(state: SnapszerState) -> Tuple[float, float]:
-    """Get returns for both players."""
-    if not state.terminal or state.winner == -1:
-        return (0.0, 0.0)
-    diff = state.game_points[0] - state.game_points[1]
-    return (float(diff), float(-diff))
+    """Get returns for both players (JAX-compatible)."""
+    # Check if game is complete AND has a winner
+    is_valid = jnp.logical_and(state.terminal, state.winner != -1)
+
+    def compute_diff(_):
+        diff = state.game_points[0] - state.game_points[1]
+        return (jnp.float32(diff), jnp.float32(-diff))
+
+    def return_zeros(_):
+        return (jnp.float32(0.0), jnp.float32(0.0))
+
+    return jax.lax.cond(
+        is_valid,
+        compute_diff,
+        return_zeros,
+        None
+    )
 
 
 @jax.jit
