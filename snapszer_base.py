@@ -18,7 +18,7 @@ TRUMP_JACK_RANK = NUM_RANKS - 1
 EXCHANGE_TRUMP_ACTION = NUM_CARDS
 CLOSE_TALON_ACTION = NUM_CARDS + 1
 TOTAL_ACTIONS = NUM_CARDS + 2  # cards + EXCHANGE + CLOSE (no CLAIM)
-CLOSE_MIN_ABOVE_TRUMP = 3
+CLOSE_MIN_ABOVE_TRUMP = 2
 OBSERVATION_SIZE = 80
 
 def card_id(suit: int, rank: int) -> int:
@@ -400,6 +400,8 @@ class SnapszerState:
             gp = 3
         elif cause == "auto66":
             gp = 3 if self.tricks_won[loser] == 0 else (2 if self.points[loser] < 33 else 1)
+        elif cause == "last_trick":
+            gp = 1
         else:
             gp = 1 if self.points[loser] >= 33 else 2
         return (gp if winner == 0 else 0, gp if winner == 1 else 0)

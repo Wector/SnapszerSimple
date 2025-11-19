@@ -1,0 +1,292 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import gymnasium as gym
+from torch.distributions.categorical import Categorical
+from snapszer_gym import SnapszerGymEnv
+from snapszer_base import TOTAL_ACTIONS, OBSERVATION_SIZE
+import time
+import os
+
+import argparse
+
+# --- STRICT GPU CHECK ---
+if not torch.cuda.is_available():
+    raise RuntimeError("CRITICAL ERROR: GPU not detected! This script requires a CUDA-capable GPU (like your RTX 4090) to run. Aborting.")
+
+print(f"GPU Detected: {torch.cuda.get_device_name(0)}")
+device = torch.device("cuda")
+# ------------------------
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--num-envs", type=int, default=256, help="Number of parallel environments")
+    parser.add_argument("--hidden-size", type=int, default=1024, help="Hidden layer size")
+    parser.add_argument("--total-timesteps", type=int, default=2000000, help="Total timesteps")
+    parser.add_argument("--benchmark", action="store_true", help="Run in benchmark mode (short duration)")
+    parser.add_argument("--eval-freq", type=int, default=10, help="Evaluate every N updates")
+    args = parser.parse_args()
+    return args
+
+args = parse_args()
+
+# Hyperparameters
+LEARNING_RATE = 2.5e-4
+NUM_STEPS = 128
+NUM_ENVS = args.num_envs
+TOTAL_TIMESTEPS = args.total_timesteps if not args.benchmark else NUM_ENVS * NUM_STEPS * 5 # 5 updates for benchmark
+UPDATE_EPOCHS = 4
+MINIBATCH_SIZE = (NUM_ENVS * NUM_STEPS) // 4 # Auto-scale minibatch
+GAMMA = 0.99
+GAE_LAMBDA = 0.95
+CLIP_COEF = 0.2
+ENT_COEF = 0.01
+VF_COEF = 0.5
+MAX_GRAD_NORM = 0.5
+
+class Agent(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.critic = nn.Sequential(
+            nn.Linear(OBSERVATION_SIZE, args.hidden_size),
+            nn.Tanh(),
+            nn.Linear(args.hidden_size, args.hidden_size),
+            nn.Tanh(),
+            nn.Linear(args.hidden_size, 1),
+        )
+        self.actor = nn.Sequential(
+            nn.Linear(OBSERVATION_SIZE, args.hidden_size),
+            nn.Tanh(),
+            nn.Linear(args.hidden_size, args.hidden_size),
+            nn.Tanh(),
+            nn.Linear(args.hidden_size, TOTAL_ACTIONS),
+        )
+
+    def get_value(self, x):
+        return self.critic(x)
+
+    def get_action_and_value(self, x, action=None, legal_actions_mask=None):
+        logits = self.actor(x)
+        
+        # Action Masking: Set illegal actions to -inf
+        if legal_actions_mask is not None:
+            logits = logits.masked_fill(legal_actions_mask == 0, -1e9)
+
+        probs = Categorical(logits=logits)
+        if action is None:
+            action = probs.sample()
+        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+
+# Global reference to the current "best" agent for self-play
+latest_agent = None
+
+def opponent_policy_fn(obs_list, legal_actions_list):
+    global latest_agent
+    if latest_agent is None:
+        import random
+        return random.choice(legal_actions_list)
+    
+    obs_tensor = torch.tensor(obs_list, dtype=torch.float32).to(device)
+    mask = torch.zeros((TOTAL_ACTIONS,), dtype=torch.bool).to(device)
+    for act in legal_actions_list:
+        mask[act] = True
+        
+    with torch.no_grad():
+        logits = latest_agent.actor(obs_tensor)
+        logits = logits.masked_fill(~mask, -1e9)
+        probs = Categorical(logits=logits)
+        action = probs.sample()
+        
+    return action.item()
+
+def make_env():
+    def thunk():
+        def adapter(obs, legal):
+            return opponent_policy_fn(obs, legal)
+        env = SnapszerGymEnv(opponent_policy=adapter)
+        return env
+    return thunk
+
+def evaluate_vs_random(agent, num_games=100):
+    """Evaluates the agent against a random opponent."""
+    wins = 0
+    draws = 0
+    losses = 0
+    
+    # Create a separate env for evaluation (single threaded is fine for 100 games)
+    # We need an opponent policy that is purely random
+    def random_opp(obs, legal):
+        import random
+        return random.choice(legal)
+        
+    env = SnapszerGymEnv(opponent_policy=random_opp)
+    
+    for _ in range(num_games):
+        obs, info = env.reset()
+        done = False
+        while not done:
+            # Agent's turn
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device).unsqueeze(0)
+            legal = info["legal_actions"]
+            mask = torch.zeros((1, TOTAL_ACTIONS)).to(device)
+            for act in legal:
+                mask[0, act] = 1.0
+                
+            with torch.no_grad():
+                action, _, _, _ = agent.get_action_and_value(obs_tensor, legal_actions_mask=mask)
+                
+            obs, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+            
+            if done:
+                if reward > 0:
+                    wins += 1
+                elif reward < 0:
+                    losses += 1
+                else:
+                    draws += 1
+                    
+    return wins, draws, losses
+
+def train():
+    global latest_agent
+    
+    # Initialize Agent
+    agent = Agent().to(device)
+    optimizer = optim.Adam(agent.parameters(), lr=LEARNING_RATE, eps=1e-5)
+    
+    # Initialize Envs
+    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(NUM_ENVS)])
+    
+    # Storage
+    obs = torch.zeros((NUM_STEPS, NUM_ENVS, OBSERVATION_SIZE)).to(device)
+    actions = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
+    logprobs = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
+    rewards = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
+    dones = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
+    values = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
+    
+    # Starting state
+    next_obs_np, infos = envs.reset()
+    next_obs = torch.Tensor(next_obs_np).to(device)
+    next_done = torch.zeros(NUM_ENVS).to(device)
+    
+    start_time = time.time()
+    
+    print(f"Starting training loop on {device}...")
+    print(f"{'Update':<8} | {'SPS':<8} | {'Win Rate (vs Rnd)':<18} | {'Loss':<8}")
+    print("-" * 50)
+    
+    for update in range(1, TOTAL_TIMESTEPS // (NUM_STEPS * NUM_ENVS) + 1):
+        latest_agent = agent 
+        
+        frac = 1.0 - (update - 1.0) / (TOTAL_TIMESTEPS // (NUM_STEPS * NUM_ENVS))
+        lrnow = frac * LEARNING_RATE
+        optimizer.param_groups[0]["lr"] = lrnow
+
+        for step in range(0, NUM_STEPS):
+            obs[step] = next_obs
+            dones[step] = next_done
+            
+            legal_actions_lists = infos["legal_actions"]
+            current_masks = torch.zeros((NUM_ENVS, TOTAL_ACTIONS)).to(device)
+            for i, legal in enumerate(legal_actions_lists):
+                for act in legal:
+                    current_masks[i, act] = 1.0
+            
+            with torch.no_grad():
+                action, logprob, _, value = agent.get_action_and_value(next_obs, legal_actions_mask=current_masks)
+                values[step] = value.flatten()
+            
+            actions[step] = action
+            logprobs[step] = logprob
+
+            next_obs_np, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
+            done = np.logical_or(terminated, truncated)
+            rewards[step] = torch.tensor(reward).to(device).view(-1)
+            next_obs, next_done = torch.Tensor(next_obs_np).to(device), torch.Tensor(done).to(device)
+
+        with torch.no_grad():
+            next_value = agent.get_value(next_obs).reshape(1, -1)
+            advantages = torch.zeros_like(rewards).to(device)
+            lastgaelam = 0
+            for t in reversed(range(NUM_STEPS)):
+                if t == NUM_STEPS - 1:
+                    nextnonterminal = 1.0 - next_done
+                    nextvalues = next_value
+                else:
+                    nextnonterminal = 1.0 - dones[t + 1]
+                    nextvalues = values[t + 1]
+                delta = rewards[t] + GAMMA * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + GAMMA * GAE_LAMBDA * nextnonterminal * lastgaelam
+            returns = advantages + values
+
+        b_obs = obs.reshape((-1, OBSERVATION_SIZE))
+        b_logprobs = logprobs.reshape(-1)
+        b_actions = actions.reshape(-1)
+        b_advantages = advantages.reshape(-1)
+        b_returns = returns.reshape(-1)
+        b_values = values.reshape(-1)
+
+        b_inds = np.arange(NUM_STEPS * NUM_ENVS)
+        clipfracs = []
+        for epoch in range(UPDATE_EPOCHS):
+            np.random.shuffle(b_inds)
+            for start in range(0, NUM_STEPS * NUM_ENVS, MINIBATCH_SIZE):
+                end = start + MINIBATCH_SIZE
+                mb_inds = b_inds[start:end]
+                
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                logratio = newlogprob - b_logprobs[mb_inds]
+                ratio = logratio.exp()
+
+                with torch.no_grad():
+                    old_approx_kl = (-logratio).mean()
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [((ratio - 1.0).abs() > CLIP_COEF).float().mean().item()]
+
+                mb_advantages = b_advantages[mb_inds]
+                if True: 
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - CLIP_COEF, 1 + CLIP_COEF)
+                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+                newvalue = newvalue.view(-1)
+                v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
+                v_clipped = b_values[mb_inds] + torch.clamp(
+                    newvalue - b_values[mb_inds],
+                    -CLIP_COEF,
+                    CLIP_COEF,
+                )
+                v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
+                v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                v_loss = 0.5 * v_loss_max.mean()
+
+                entropy_loss = entropy.mean()
+                loss = pg_loss - ENT_COEF * entropy_loss + v_loss * VF_COEF
+
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(agent.parameters(), MAX_GRAD_NORM)
+                optimizer.step()
+
+        sps = int((NUM_STEPS * NUM_ENVS) / (time.time() - start_time))
+        
+        # Evaluation
+        win_rate_str = "-"
+        if update % args.eval_freq == 0:
+            w, d, l = evaluate_vs_random(agent, num_games=100)
+            win_rate = (w / (w + d + l)) * 100
+            win_rate_str = f"{win_rate:.1f}%"
+            
+        print(f"{update:<8} | {sps:<8} | {win_rate_str:<18} | {loss.item():.4f}")
+        start_time = time.time()
+
+    envs.close()
+    print("Training complete.")
+
+if __name__ == "__main__":
+    train()
