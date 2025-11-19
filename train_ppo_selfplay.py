@@ -26,6 +26,9 @@ def parse_args():
     parser.add_argument("--total-timesteps", type=int, default=2000000, help="Total timesteps")
     parser.add_argument("--benchmark", action="store_true", help="Run in benchmark mode (short duration)")
     parser.add_argument("--eval-freq", type=int, default=10, help="Evaluate every N updates")
+    parser.add_argument("--exp-name", type=str, default="snapszer_ppo", help="Experiment name for saving models")
+    parser.add_argument("--save-freq", type=int, default=50, help="Save model every N updates")
+    parser.add_argument("--load-model", type=str, default="", help="Path to model checkpoint to load")
     args = parser.parse_args()
     return args
 
@@ -78,35 +81,31 @@ class Agent(nn.Module):
             action = probs.sample()
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
-# Global reference to the current "best" agent for self-play
-latest_agent = None
+from snapszer_vector_env import SnapszerBatchedEnv
+from snapszer_gym import SnapszerGymEnv
 
-def opponent_policy_fn(obs_list, legal_actions_list):
+def opponent_policy_fn(obs_tensor, mask_tensor):
+    # Batched inference function
+    # obs_tensor: (batch, obs_size)
+    # mask_tensor: (batch, actions)
     global latest_agent
-    if latest_agent is None:
-        import random
-        return random.choice(legal_actions_list)
     
-    obs_tensor = torch.tensor(obs_list, dtype=torch.float32).to(device)
-    mask = torch.zeros((TOTAL_ACTIONS,), dtype=torch.bool).to(device)
-    for act in legal_actions_list:
-        mask[act] = True
-        
+    # If no agent yet, random actions
+    if latest_agent is None:
+        # We need to return random valid actions
+        # This is a bit tricky on GPU efficiently without an agent
+        # Let's just use a simple CPU fallback or a dummy agent?
+        # Actually, let's just wait for first update or initialize agent before loop.
+        # But for now, let's assume latest_agent is initialized at start of train()
+        pass
+
     with torch.no_grad():
         logits = latest_agent.actor(obs_tensor)
-        logits = logits.masked_fill(~mask, -1e9)
+        logits = logits.masked_fill(~mask_tensor, -1e9)
         probs = Categorical(logits=logits)
         action = probs.sample()
         
-    return action.item()
-
-def make_env():
-    def thunk():
-        def adapter(obs, legal):
-            return opponent_policy_fn(obs, legal)
-        env = SnapszerGymEnv(opponent_policy=adapter)
-        return env
-    return thunk
+    return action
 
 def evaluate_vs_random(agent, num_games=100):
     """Evaluates the agent against a random opponent."""
@@ -152,12 +151,25 @@ def evaluate_vs_random(agent, num_games=100):
 def train():
     global latest_agent
     
+    # Setup directories
+    model_dir = os.path.join("models", args.exp_name)
+    os.makedirs(model_dir, exist_ok=True)
+    
     # Initialize Agent
     agent = Agent().to(device)
+    
+    # Load checkpoint if requested
+    if args.load_model:
+        print(f"Loading model from {args.load_model}...")
+        agent.load_state_dict(torch.load(args.load_model))
+        
+    latest_agent = agent # Initialize immediately so opponent has a policy
+    
     optimizer = optim.Adam(agent.parameters(), lr=LEARNING_RATE, eps=1e-5)
     
-    # Initialize Envs
-    envs = gym.vector.SyncVectorEnv([make_env() for _ in range(NUM_ENVS)])
+    # Initialize Batched Env
+    # Note: SnapszerBatchedEnv takes (num_envs, device, policy_fn)
+    envs = SnapszerBatchedEnv(NUM_ENVS, device, opponent_policy_fn)
     
     # Storage
     obs = torch.zeros((NUM_STEPS, NUM_ENVS, OBSERVATION_SIZE)).to(device)
@@ -168,6 +180,7 @@ def train():
     values = torch.zeros((NUM_STEPS, NUM_ENVS)).to(device)
     
     # Starting state
+    # SnapszerBatchedEnv returns (obs_np, infos)
     next_obs_np, infos = envs.reset()
     next_obs = torch.Tensor(next_obs_np).to(device)
     next_done = torch.zeros(NUM_ENVS).to(device)
@@ -189,11 +202,8 @@ def train():
             obs[step] = next_obs
             dones[step] = next_done
             
-            legal_actions_lists = infos["legal_actions"]
-            current_masks = torch.zeros((NUM_ENVS, TOTAL_ACTIONS)).to(device)
-            for i, legal in enumerate(legal_actions_lists):
-                for act in legal:
-                    current_masks[i, act] = 1.0
+            # Get legal actions mask directly from infos (it's a tensor now!)
+            current_masks = infos["legal_actions_mask"]
             
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs, legal_actions_mask=current_masks)
@@ -202,9 +212,15 @@ def train():
             actions[step] = action
             logprobs[step] = logprob
 
-            next_obs_np, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
-            done = np.logical_or(terminated, truncated)
+            # Execute
+            # envs.step takes tensor or numpy
+            next_obs_np, reward, terminated, truncated, infos = envs.step(action)
+            
+            # reward is numpy array
             rewards[step] = torch.tensor(reward).to(device).view(-1)
+            
+            # done is numpy array
+            done = np.logical_or(terminated, truncated)
             next_obs, next_done = torch.Tensor(next_obs_np).to(device), torch.Tensor(done).to(device)
 
         with torch.no_grad():
@@ -282,10 +298,23 @@ def train():
             win_rate = (w / (w + d + l)) * 100
             win_rate_str = f"{win_rate:.1f}%"
             
+        # Checkpointing
+        if update % args.save_freq == 0:
+            save_path = os.path.join(model_dir, f"agent_{update}.pt")
+            latest_path = os.path.join(model_dir, "latest.pt")
+            torch.save(agent.state_dict(), save_path)
+            torch.save(agent.state_dict(), latest_path)
+            # print(f"Model saved to {save_path}") # Optional: keep output clean
+            
         print(f"{update:<8} | {sps:<8} | {win_rate_str:<18} | {loss.item():.4f}")
         start_time = time.time()
 
-    envs.close()
+    # Final save
+    final_path = os.path.join(model_dir, "final.pt")
+    torch.save(agent.state_dict(), final_path)
+    print(f"Final model saved to {final_path}")
+    
+    # envs.close() # BatchedEnv might not have close()
     print("Training complete.")
 
 if __name__ == "__main__":
