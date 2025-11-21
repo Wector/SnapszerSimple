@@ -19,7 +19,7 @@ EXCHANGE_TRUMP_ACTION = NUM_CARDS
 CLOSE_TALON_ACTION = NUM_CARDS + 1
 TOTAL_ACTIONS = NUM_CARDS + 2  # cards + EXCHANGE + CLOSE (no CLAIM)
 CLOSE_MIN_ABOVE_TRUMP = 2
-OBSERVATION_SIZE = 80
+OBSERVATION_SIZE = 122
 
 def card_id(suit: int, rank: int) -> int:
     return suit * NUM_RANKS + rank
@@ -140,6 +140,9 @@ class SnapszerState:
     terminal: bool = False
     winner: Optional[int] = None
     game_points: Optional[Tuple[int, int]] = None
+    played_cards_mask: int = 0
+    known_cards_mask: List[int] = field(default_factory=lambda: [0, 0]) # Cards known to be in each player's hand
+    impossible_cards_mask: List[int] = field(default_factory=lambda: [0, 0]) # Cards known NOT to be in each player's hand
 
     @staticmethod
     def new(seed: Optional[int] = None) -> "SnapszerState":
@@ -167,6 +170,9 @@ class SnapszerState:
             points=[0, 0],
             tricks_won=[0, 0],
             closed=False,
+            played_cards_mask=0,
+            known_cards_mask=[0, 0],
+            impossible_cards_mask=[0, 0],
         )
         return state
 
@@ -211,13 +217,62 @@ class SnapszerState:
         opponent = 1 - player
         values[68] = self.points[player] / 120.0
         values[69] = self.points[opponent] / 120.0
-        values[70] = self.tricks_won[player] / float(TRICKS_PER_GAME)
         values[71] = self.tricks_won[opponent] / float(TRICKS_PER_GAME)
         values[72] = 1.0 if self.current_player == player else 0.0
         values[73] = 1.0 if self.leader == player else 0.0
         values[74] = 1.0 if self.closed_by == player else 0.0
         values[75] = 1.0 if self.closed_by == opponent else 0.0
         values[76] = 1.0 if self.strict_rules_active() else 0.0
+        
+        # Possible Opponent Cards (20 features) - REPLACES Played Cards
+        # This represents the "Fog of War" - cards that are unaccounted for.
+        # They might be in the opponent's hand, or in the stock.
+        # We exclude:
+        # 1. My hand (I have them)
+        # 2. Played cards (They are gone)
+        # 3. Known opponent cards (We know he has them - covered by separate feature)
+        # 4. Visible trump card (If stock exists, it's at the bottom, not in his hand)
+        
+        all_cards_mask = (1 << NUM_CARDS) - 1
+        my_hand_mask = self.hand_masks[player]
+        opp_known_mask = self.known_cards_mask[opponent]
+        
+        # Start with everything
+        possible_mask = all_cards_mask
+        
+        # Remove what we know is NOT in his hand
+        possible_mask &= ~my_hand_mask
+        possible_mask &= ~self.played_cards_mask
+        possible_mask &= ~opp_known_mask # These are in "Known", so remove from "Uncertain/Possible"
+        possible_mask &= ~self.impossible_cards_mask[opponent] # INFERENCE: Remove cards we know he can't have
+        
+        # Remove visible trump if it's still in stock
+        if not self.trump_taken:
+             possible_mask &= ~(1 << self.trump_card)
+             
+        for i in range(NUM_CARDS):
+            if (possible_mask >> i) & 1:
+                values[80 + i] = 1.0
+        
+        # Explicit Action Availability (2 features)
+        if self._can_exchange_trump_jack(player):
+            values[100] = 1.0
+        if (
+            not self.closed
+            and not self.talon_empty()
+            and self.stock_remaining() >= CLOSE_MIN_ABOVE_TRUMP
+            and self.leader == player
+            and self.trick_cards[0] is None
+        ):
+            values[101] = 1.0
+
+        # Known Opponent Cards (20 features) - NEW
+        # These are cards we KNOW the opponent has (e.g. from marriage or exchange)
+        opp_known_mask = self.known_cards_mask[opponent]
+        for i in range(NUM_CARDS):
+            if (opp_known_mask >> i) & 1:
+                values[102 + i] = 1.0
+                
         return values
 
     def to_string(self, perspective: int) -> str:
@@ -278,11 +333,64 @@ class SnapszerState:
         jack_cid = card_id(self.trump, TRUMP_JACK_RANK)
         return mask_contains(self.hand_masks[player], jack_cid)
 
+    def can_declare_marriage(self, player: int) -> bool:
+        """Checks if the player can declare a marriage (has K+Q of same suit) and is on lead."""
+        if self.strict_rules_active():
+            return False
+        if self.leader != player or self.current_player != player:
+            return False
+        if self.trick_cards[0] is not None:
+            return False
+        
+        hand_mask = self.hand_masks[player]
+        for s in SUITS:
+            if self.marriages_scored[player][s]:
+                continue
+            k_cid = card_id(s, 2) # King
+            q_cid = card_id(s, 3) # Queen
+            if mask_contains(hand_mask, k_cid) and mask_contains(hand_mask, q_cid):
+                return True
+        return False
+
     def _apply_close(self):
         self.closed = True
         self.closed_by = self.current_player
         self.stock_idx = len(self.stock)
         self.trump_taken = True
+
+    def _update_inference(self, player: int, lead_cid: int, reply_cid: int):
+        """Updates impossible_cards_mask based on strict rule constraints."""
+        lead_s = cid_suit(lead_cid)
+        reply_s = cid_suit(reply_cid)
+        
+        # Rule 1: Must follow suit
+        if reply_s != lead_s:
+            # Player failed to follow suit -> Has NO cards of lead suit
+            for r in RANKS:
+                c = card_id(lead_s, r)
+                self.impossible_cards_mask[player] |= (1 << c)
+                
+            # Rule 3: Must play trump if cannot follow suit
+            if reply_s != self.trump:
+                # Player failed to follow suit AND failed to play trump -> Has NO trumps
+                for r in RANKS:
+                    c = card_id(self.trump, r)
+                    self.impossible_cards_mask[player] |= (1 << c)
+                    
+        # Rule 2: Must win (if following suit)
+        elif reply_s == lead_s:
+            lead_strength = RANK_STRENGTH[cid_rank(lead_cid)]
+            reply_strength = RANK_STRENGTH[cid_rank(reply_cid)]
+            
+            if reply_strength <= lead_strength:
+                # Player followed suit but didn't beat the card (or played equal/lower)
+                # This implies they have NO card of this suit that is stronger
+                # (Unless they played the strongest possible card, but logic holds: 
+                # if they had a stronger card, they MUST have played it)
+                for r in RANKS:
+                    c = card_id(lead_s, r)
+                    if RANK_STRENGTH[r] > lead_strength:
+                        self.impossible_cards_mask[player] |= (1 << c)
 
     def _exchange_trump_jack(self, player: int) -> None:
         jack_cid = card_id(self.trump, TRUMP_JACK_RANK)
@@ -292,6 +400,9 @@ class SnapszerState:
         gained = self.trump_card
         self._insert_card_to_hand(player, gained)
         self.trump_card = jack_cid
+        
+        # The card picked up (gained) is known to the opponent
+        self.known_cards_mask[player] |= (1 << gained)
 
     def _maybe_finalize_on_66(self) -> None:
         if self.terminal:
@@ -317,6 +428,10 @@ class SnapszerState:
             self.marriages_scored[player][s] = True
             bonus = 40 if s == self.trump else 20
             self.points[player] += bonus
+            
+            # The counterpart card is now known to the opponent
+            self.known_cards_mask[player] |= (1 << counterpart_cid)
+            
             self._maybe_finalize_on_66()
 
     def _remove_card_from_hand(self, player: int, cid: int) -> None:
@@ -335,11 +450,28 @@ class SnapszerState:
         lead_card, reply_card = self.trick_cards
         assert lead_card is not None and reply_card is not None
         w_rel = trick_winner(lead_card, reply_card, self.trump, self.strict_rules_active())
+        
+        # INFERENCE: If strict rules were active, update impossible mask based on reply
+        if self.strict_rules_active():
+            replier = 1 - self.leader
+            self._update_inference(replier, lead_card, reply_card)
+            
         w = (self.leader + w_rel) % 2
         pts = card_points(lead_card) + card_points(reply_card)
         self.points[w] += pts
         self.tricks_won[w] += 1
         self.last_trick_winner = w
+        
+        # Mark played cards
+        self.played_cards_mask |= (1 << lead_card)
+        self.played_cards_mask |= (1 << reply_card)
+        
+        # Remove played cards from known_cards_mask (they are no longer in hand)
+        self.known_cards_mask[0] &= ~(1 << lead_card)
+        self.known_cards_mask[0] &= ~(1 << reply_card)
+        self.known_cards_mask[1] &= ~(1 << lead_card)
+        self.known_cards_mask[1] &= ~(1 << reply_card)
+        
         self.trick_cards = [None, None]
 
         self._maybe_finalize_on_66()

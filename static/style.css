@@ -1,0 +1,631 @@
+:root {
+    --bg-color: #0f172a;
+    --surface-color: #1e293b;
+    --primary-color: #3b82f6;
+    --accent-color: #f59e0b;
+    --text-color: #f8fafc;
+    --text-muted: #94a3b8;
+    --card-width: 80px;
+    --card-height: 120px;
+    --card-radius: 8px;
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: 'Outfit', sans-serif;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 1rem;
+}
+
+/* Header */
+header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.game-info {
+    background: var(--surface-color);
+    padding: 1rem 2rem;
+    border-radius: 16px;
+    box-shadow: var(--shadow-md);
+    width: 100%;
+    max-width: 600px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.score-board {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.player-score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.player-score .label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.player-score .score {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-color);
+}
+
+.player-score .game-points {
+    font-size: 0.8rem;
+    color: var(--accent-color);
+}
+
+.vs {
+    font-weight: 700;
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.status-bar {
+    text-align: center;
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    font-weight: 500;
+    min-height: 1.4em;
+}
+
+/* Main Game Area */
+main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+}
+
+/* Card Styles */
+.card {
+    width: var(--card-width);
+    height: var(--card-height);
+    background: white;
+    border-radius: var(--card-radius);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+    box-shadow: var(--shadow-md);
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+    user-select: none;
+    color: black;
+}
+
+.card.back {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border: 2px solid #334155;
+}
+
+.card.back::after {
+    content: "♠";
+    font-size: 2rem;
+    color: #334155;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+    box-shadow: var(--shadow-lg);
+}
+
+.card.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.card-content {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.card-top {
+    width: 100%;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+}
+
+.card-center {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.suit-icon-large {
+    font-size: 2.5rem;
+}
+
+/* Suit Colors */
+.suit-spring {
+    color: #ec4899;
+}
+
+/* Pink */
+.suit-summer {
+    color: #eab308;
+}
+
+/* Yellow */
+.suit-autumn {
+    color: #a855f7;
+}
+
+/* Purple */
+.suit-winter {
+    color: #3b82f6;
+}
+
+/* Blue */
+
+.opponent-area .hand {
+    display: flex;
+    gap: 0.5rem;
+    min-height: var(--card-height);
+}
+
+/* Table Area */
+.table-area {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 4rem;
+    position: relative;
+}
+
+.deck-area {
+    position: absolute;
+    left: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.stock-pile {
+    position: relative;
+}
+
+.stock-pile .count {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    background: var(--accent-color);
+    color: black;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.trump-card {
+    transform: rotate(90deg);
+    margin-left: -40px;
+    z-index: -1;
+}
+
+.trick-area {
+    display: flex;
+    gap: 2rem;
+}
+
+.card-slot {
+    width: var(--card-width);
+    height: var(--card-height);
+    border: 2px dashed #334155;
+    border-radius: var(--card-radius);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.card-slot .card {
+    cursor: default;
+    transform: none;
+}
+
+/* Player Area */
+.player-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.player-area .hand {
+    display: flex;
+    gap: 0.5rem;
+    min-height: var(--card-height);
+}
+
+.actions {
+    display: flex;
+    gap: 1rem;
+}
+
+.action-btn {
+    background: var(--surface-color);
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+.action-btn:hover:not(:disabled) {
+    background: var(--primary-color);
+    color: white;
+}
+
+.action-btn:disabled {
+    border-color: #334155;
+    color: #334155;
+    cursor: not-allowed;
+}
+
+
+.hidden {
+    display: none !important;
+}
+
+#modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+    backdrop-filter: blur(4px);
+}
+
+.modal {
+    background: var(--surface-color);
+    padding: 2rem;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid #334155;
+    max-width: 400px;
+    width: 90%;
+}
+
+.modal h2 {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+    color: var(--text-color);
+}
+
+.modal p {
+    margin-bottom: 2rem;
+    color: var(--text-muted);
+}
+
+.modal .action-btn.primary {}
+
+.stock-pile .count {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    background: var(--accent-color);
+    color: black;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.trump-card {
+    transform: rotate(90deg);
+    margin-left: -40px;
+    z-index: -1;
+}
+
+.trick-area {
+    display: flex;
+    gap: 2rem;
+}
+
+.card-slot {
+    width: var(--card-width);
+    height: var(--card-height);
+    border: 2px dashed #334155;
+    border-radius: var(--card-radius);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.card-slot .card {
+    cursor: default;
+    transform: none;
+}
+
+/* Player Area */
+.player-area {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.player-area .hand {
+    display: flex;
+    gap: 0.5rem;
+    min-height: var(--card-height);
+}
+
+.actions {
+    display: flex;
+    gap: 1rem;
+}
+
+.action-btn {
+    background: var(--surface-color);
+    border: 1px solid var(--primary-color);
+    color: var(--primary-color);
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+
+    .stock-pile .count {
+        position: absolute;
+        top: -10px;
+        right: -10px;
+        background: var(--accent-color);
+        color: black;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 0.8rem;
+        font-weight: 700;
+    }
+
+    .trump-card {
+        transform: rotate(90deg);
+        margin-left: -40px;
+        z-index: -1;
+    }
+
+    .trick-area {
+        display: flex;
+        gap: 2rem;
+    }
+
+    .card-slot {
+        width: var(--card-width);
+        height: var(--card-height);
+        border: 2px dashed #334155;
+        border-radius: var(--card-radius);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .card-slot .card {
+        cursor: default;
+        transform: none;
+    }
+
+    /* Player Area */
+    .player-area {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .player-area .hand {
+        display: flex;
+        gap: 0.5rem;
+        min-height: var(--card-height);
+    }
+
+    .actions {
+        display: flex;
+        gap: 1rem;
+    }
+
+    .action-btn {
+        background: var(--surface-color);
+        border: 1px solid var(--primary-color);
+        color: var(--primary-color);
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.2s;
+    }
+
+    .action-btn:hover:not(:disabled) {
+        background: var(--primary-color);
+        color: white;
+    }
+
+    .action-btn:disabled {
+        border-color: #334155;
+        color: #334155;
+        cursor: not-allowed;
+    }
+
+
+    .hidden {
+        display: none !important;
+    }
+
+    #modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 100;
+        backdrop-filter: blur(4px);
+    }
+
+    .modal {
+        background: var(--surface-color);
+        padding: 2rem;
+        border-radius: 16px;
+        text-align: center;
+        box-shadow: var(--shadow-lg);
+        border: 1px solid #334155;
+        max-width: 400px;
+        width: 90%;
+    }
+
+    .modal h2 {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+        color: var(--text-color);
+    }
+
+    .modal p {
+        margin-bottom: 2rem;
+        color: var(--text-muted);
+    }
+
+    .modal .action-btn.primary {}
+
+    .stock-pile .count {
+        position: absolute;
+        top: -10px;
+        right: -10px;
+        background: var(--accent-color);
+        color: black;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 0.8rem;
+        font-weight: 700;
+    }
+
+    .trump-card {
+        transform: rotate(90deg);
+        margin-left: -40px;
+        z-index: -1;
+    }
+
+    .trick-area {
+        display: flex;
+        gap: 2rem;
+    }
+
+    .card-slot {
+        width: var(--card-width);
+        height: var(--card-height);
+        border: 2px dashed #334155;
+        border-radius: var(--card-radius);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .card-slot .card {
+        cursor: default;
+        transform: none;
+    }
+
+    /* Player Area */
+    .player-area {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .player-area .hand {
+        display: flex;
+        gap: 0.5rem;
+        min-height: var(--card-height);
+    }
+
+    .actions {
+        display: flex;
+        gap: 1rem;
+    }
+
+    .action-btn {
+        background: var(--surface-color);
+        border: 1px solid var(--primary-color);
+        color: var(--primary-color);
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+    }

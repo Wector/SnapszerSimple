@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snapszer AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div id="app">
+        <header>
+            <h1>Snapszer</h1>
+            <div class="game-info">
+                <div class="score-board">
+                    <div class="player-score">
+                        <span class="label">YOU</span>
+                        <span class="score" id="human-score">0</span>
+                        <span class="game-points" id="human-gp">GP: 0</span>
+                    </div>
+                    <div class="vs">VS</div>
+                    <div class="player-score">
+                        <span class="label">AGENT</span>
+                        <span class="score" id="agent-score">0</span>
+                        <span class="game-points" id="agent-gp">GP: 0</span>
+                    </div>
+                </div>
+                <div class="status-bar" id="status-message">Loading...</div>
+            </div>
+        </header>
+
+        <main>
+            <!-- Opponent Area -->
+            <section class="opponent-area">
+                <div class="hand" id="opponent-hand">
+                    <!-- Cards will be rendered here as backs -->
+                </div>
+                <div class="tricks-won">
+                    <span>Tricks: <span id="opponent-tricks">0</span></span>
+                </div>
+            </section>
+
+            <!-- Table Area -->
+            <section class="table-area">
+                <div class="deck-area">
+                    <div class="stock-pile">
+                        <div class="card back"></div>
+                        <span class="count" id="stock-count">0</span>
+                    </div>
+                    <div class="trump-card" id="trump-card-container">
+                        <!-- Trump card here -->
+                    </div>
+                    <div class="trump-suit-indicator" id="trump-suit-display">
+                        <!-- Icon for trump suit if taken -->
+                    </div>
+                </div>
+
+                <div class="trick-area">
+                    <div class="card-slot" id="trick-card-0"></div> <!-- Leader -->
+                    <div class="card-slot" id="trick-card-1"></div> <!-- Follower -->
+                </div>
+            </section>
+
+            <!-- Player Area -->
+            <section class="player-area">
+                <div class="actions" id="action-buttons">
+                    <button id="btn-exchange" class="action-btn" disabled>Exchange Trump</button>
+                    <button id="btn-close" class="action-btn" disabled>Close Talon</button>
+                    <button id="btn-new-game" class="action-btn secondary">New Game</button>
+                </div>
+                <div class="hand" id="player-hand">
+                    <!-- Player cards here -->
+                </div>
+                <div class="tricks-won">
+                    <span>Tricks: <span id="player-tricks">0</span></span>
+                </div>
+            </section>
+        </main>
+
+        <!-- Game Over Modal -->
+        <div id="modal-overlay" class="hidden">
+            <div class="modal">
+                <h2 id="modal-title">Game Over</h2>
+                <p id="modal-message">You won!</p>
+                <button id="btn-restart" class="action-btn primary">Play Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

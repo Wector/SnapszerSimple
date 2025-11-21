@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snapszer Training Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            margin: 0;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 20px;
+            color: #94a3b8;
+        }
+
+        h1 {
+            margin: 0;
+            color: #f8fafc;
+        }
+
+        .btn {
+            background-color: #3b82f6;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        .chart-container {
+            background-color: #1e293b;
+            padding: 20px;
+            border-radius: 10px;
+            border: 1px solid #334155;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 1.2rem;
+            color: #94a3b8;
+        }
+
+        @media (max-width: 1400px) {
+            .grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 900px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <div>
+            <h1>Training Dashboard</h1>
+            <span id="metrics-source" style="font-size: 0.8rem; color: #64748b;">Loading source...</span>
+        </div>
+        <a href="index.html" class="btn">Back to Home</a>
+    </header>
+
+    <div class="grid">
+        <div class="chart-container">
+            <h2>Win Rate Progress</h2>
+            <canvas id="winRateChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Game Points Distribution (Wins)</h2>
+            <canvas id="pointsChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Strategy: Talon Actions</h2>
+            <canvas id="strategyChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Game Outcome Breakdown</h2>
+            <canvas id="outcomeChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Other Strategic Moves</h2>
+            <canvas id="advancedChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Talon Close Attempts</h2>
+            <canvas id="talonCountChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        async function fetchMetrics() {
+            try {
+                const response = await fetch('/api/metrics');
+
+                // Update source display
+                const source = response.headers.get('X-Metrics-Source');
+                if (source) {
+                    document.getElementById('metrics-source').textContent = 'Source: ' + source;
+                }
+
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('Error fetching metrics:', error);
+                return [];
+            }
+        }
+
+        function processData(data) {
+            const updates = data.map(d => d.update);
+            const winRates = data.map(d => d.win_rate);
+
+            const gp3 = data.map(d => d.gp_3);
+            const gp2 = data.map(d => d.gp_2);
+            const gp1 = data.map(d => d.gp_1);
+
+            const marriages = data.map(d => d.marriage_decl_rate);
+
+            // New metrics (handle missing data for old logs)
+            const wins = data.map(d => d.wins || 0);
+            const losses = data.map(d => d.losses || 0);
+            const draws = data.map(d => d.draws || 0);
+
+            const trumpEx = data.map(d => d.trump_exchange_rate || 0);
+            const talonCl = data.map(d => d.talon_close_rate || 0);
+            const talonWinRate = data.map(d => d.talon_close_win_rate || 0);
+            const talonCount = data.map(d => d.talon_close_count || 0);
+
+            return { updates, winRates, gp3, gp2, gp1, marriages, wins, losses, draws, trumpEx, talonCl, talonWinRate, talonCount };
+        }
+
+        let charts = {};
+
+        async function initCharts() {
+            const rawData = await fetchMetrics();
+            const data = processData(rawData);
+
+            const commonOptions = {
+                responsive: true,
+                scales: { y: { beginAtZero: true, grid: { color: '#334155' } }, x: { grid: { color: '#334155' } } }
+            };
+
+            // Win Rate Chart
+            const ctxWin = document.getElementById('winRateChart').getContext('2d');
+            charts.winRate = new Chart(ctxWin, {
+                type: 'line',
+                data: {
+                    labels: data.updates,
+                    datasets: [{
+                        label: 'Win Rate (%)',
+                        data: data.winRates,
+                        borderColor: '#3b82f6',
+                        tension: 0.1,
+                        fill: false
+                    }]
+                },
+                options: { ...commonOptions, scales: { ...commonOptions.scales, y: { ...commonOptions.scales.y, max: 100 } } }
+            });
+
+            // Points Chart
+            const ctxPts = document.getElementById('pointsChart').getContext('2d');
+            charts.points = new Chart(ctxPts, {
+                type: 'bar',
+                data: {
+                    labels: data.updates,
+                    datasets: [
+                        { label: '3 Points', data: data.gp3, backgroundColor: '#ef4444' },
+                        { label: '2 Points', data: data.gp2, backgroundColor: '#f59e0b' },
+                        { label: '1 Point', data: data.gp1, backgroundColor: '#10b981' }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: { x: { stacked: true, grid: { color: '#334155' } }, y: { stacked: true, grid: { color: '#334155' } } }
+                }
+            });
+
+            // Strategy Chart (Talon)
+            const ctxStrat = document.getElementById('strategyChart').getContext('2d');
+            charts.strategy = new Chart(ctxStrat, {
+                type: 'line',
+                data: {
+                    labels: data.updates,
+                    datasets: [
+                        { label: 'Talon Close Rate (%)', data: data.talonCl, borderColor: '#8b5cf6', tension: 0.1 },
+                        { label: 'Win Rate when Closed (%)', data: data.talonWinRate, borderColor: '#ec4899', tension: 0.1 }
+                    ]
+                },
+                options: { ...commonOptions, scales: { ...commonOptions.scales, y: { ...commonOptions.scales.y, max: 100 } } }
+            });
+
+            // Outcome Chart (Stacked Area)
+            const ctxOutcome = document.getElementById('outcomeChart').getContext('2d');
+            charts.outcome = new Chart(ctxOutcome, {
+                type: 'line',
+                data: {
+                    labels: data.updates,
+                    datasets: [
+                        { label: 'Wins', data: data.wins, borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.2)', fill: true },
+                        { label: 'Draws', data: data.draws, borderColor: '#94a3b8', backgroundColor: 'rgba(148, 163, 184, 0.2)', fill: true },
+                        { label: 'Losses', data: data.losses, borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.2)', fill: true }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: { x: { grid: { color: '#334155' } }, y: { stacked: true, beginAtZero: true, grid: { color: '#334155' } } },
+                    elements: { point: { radius: 0 } }
+                }
+            });
+
+            // Advanced Moves Chart (Other)
+            const ctxAdv = document.getElementById('advancedChart').getContext('2d');
+            charts.advanced = new Chart(ctxAdv, {
+                type: 'line',
+                data: {
+                    labels: data.updates,
+                    datasets: [
+                        { label: 'Trump Exchange (%)', data: data.trumpEx, borderColor: '#f59e0b', tension: 0.1 },
+                        { label: 'Marriage Decl. (%)', data: data.marriages, borderColor: '#6366f1', tension: 0.1 }
+                    ]
+                },
+                options: commonOptions
+            });
+
+            // Talon Close Count Chart
+            const ctxTalonCount = document.getElementById('talonCountChart').getContext('2d');
+            charts.talonCount = new Chart(ctxTalonCount, {
+                type: 'bar',
+                data: {
+                    labels: data.updates,
+                    datasets: [{
+                        label: 'Talon Close Attempts',
+                        data: data.talonCount,
+                        backgroundColor: '#8b5cf6',
+                        borderColor: '#8b5cf6',
+                        borderWidth: 1
+                    }]
+                },
+                options: commonOptions
+            });
+        }
+
+        async function updateCharts() {
+            const rawData = await fetchMetrics();
+            const data = processData(rawData);
+
+            if (charts.winRate) {
+                charts.winRate.data.labels = data.updates;
+                charts.winRate.data.datasets[0].data = data.winRates;
+                charts.winRate.update();
+            }
+            if (charts.points) {
+                charts.points.data.labels = data.updates;
+                charts.points.data.datasets[0].data = data.gp3;
+                charts.points.data.datasets[1].data = data.gp2;
+                charts.points.data.datasets[2].data = data.gp1;
+                charts.points.update();
+            }
+            if (charts.strategy) {
+                charts.strategy.data.labels = data.updates;
+                charts.strategy.data.datasets[0].data = data.talonCl;
+                charts.strategy.data.datasets[1].data = data.talonWinRate;
+                charts.strategy.update();
+            }
+            if (charts.outcome) {
+                charts.outcome.data.labels = data.updates;
+                charts.outcome.data.datasets[0].data = data.wins;
+                charts.outcome.data.datasets[1].data = data.draws;
+                charts.outcome.data.datasets[2].data = data.losses;
+                charts.outcome.update();
+            }
+            if (charts.advanced) {
+                charts.advanced.data.labels = data.updates;
+                charts.advanced.data.datasets[0].data = data.trumpEx;
+                charts.advanced.data.datasets[1].data = data.marriages;
+                charts.advanced.update();
+            }
+            if (charts.talonCount) {
+                charts.talonCount.data.labels = data.updates;
+                charts.talonCount.data.datasets[0].data = data.talonCount;
+                charts.talonCount.update();
+            }
+        }
+
+        // Initialize
+        initCharts();
+
+        // Auto-refresh
+        setInterval(updateCharts, 30000);
+    </script>
+</body>
+
+</html>

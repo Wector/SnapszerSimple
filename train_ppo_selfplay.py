@@ -44,7 +44,7 @@ MINIBATCH_SIZE = (NUM_ENVS * NUM_STEPS) // 4 # Auto-scale minibatch
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_COEF = 0.2
-ENT_COEF = 0.01
+ENT_COEF = 0.02
 VF_COEF = 0.5
 MAX_GRAD_NORM = 0.5
 
@@ -107,14 +107,41 @@ def opponent_policy_fn(obs_tensor, mask_tensor):
         
     return action
 
-def evaluate_vs_random(agent, num_games=100):
-    """Evaluates the agent against a random opponent."""
+import json
+from snapszer_base import cid_suit, cid_rank, trick_winner, SUITS, RANK_STRENGTH
+
+class MetricsLogger:
+    def __init__(self, log_path):
+        self.log_path = log_path
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    def log(self, metrics):
+        with open(self.log_path, "a") as f:
+            f.write(json.dumps(metrics) + "\n")
+
+def evaluate_detailed(agent, update_step, num_games=100):
+    """Evaluates the agent against a random opponent and collects detailed metrics."""
     wins = 0
     draws = 0
     losses = 0
     
-    # Create a separate env for evaluation (single threaded is fine for 100 games)
-    # We need an opponent policy that is purely random
+    # Detailed stats
+    game_points_dist = {3: 0, 2: 0, 1: 0, 0: 0} # 0 for loss
+    marriage_opportunities = 0
+    marriage_declarations = 0
+    
+    # New metrics
+    trump_exchanges = 0
+    talon_closures = 0
+    
+    # Talon specific tracking
+    games_with_talon_close = 0
+    wins_with_talon_close = 0
+    
+    total_point_diff = 0
+    
+    # Create a separate env for evaluation
     def random_opp(obs, legal):
         import random
         return random.choice(legal)
@@ -124,8 +151,16 @@ def evaluate_vs_random(agent, num_games=100):
     for _ in range(num_games):
         obs, info = env.reset()
         done = False
+        talon_closed_in_this_game = False
+        
         while not done:
             # Agent's turn
+            # Check for marriage opportunity (Agent is leader, has K+Q)
+            if env.state.can_declare_marriage(env.controlled_player):
+                marriage_opportunities += 1
+            
+            is_responder = (env.state.leader != env.controlled_player)
+            
             obs_tensor = torch.tensor(obs, dtype=torch.float32).to(device).unsqueeze(0)
             legal = info["legal_actions"]
             mask = torch.zeros((1, TOTAL_ACTIONS)).to(device)
@@ -135,18 +170,76 @@ def evaluate_vs_random(agent, num_games=100):
             with torch.no_grad():
                 action, _, _, _ = agent.get_action_and_value(obs_tensor, legal_actions_mask=mask)
                 
-            obs, reward, terminated, truncated, info = env.step(action.item())
+            act_val = action.item()
+            
+            # Track special actions
+            from snapszer_base import EXCHANGE_TRUMP_ACTION, CLOSE_TALON_ACTION
+            if act_val == EXCHANGE_TRUMP_ACTION:
+                trump_exchanges += 1
+            elif act_val == CLOSE_TALON_ACTION:
+                talon_closures += 1
+                talon_closed_in_this_game = True
+            
+            points_before = env.state.points[env.controlled_player]
+            
+            # Execute step
+            obs, reward, terminated, truncated, info = env.step(act_val)
             done = terminated or truncated
             
+            # Post-action checks
+            points_after = env.state.points[env.controlled_player]
+            
+            # 1. Marriage Declaration Check
+            if not is_responder:
+                diff = points_after - points_before
+                if diff == 20 or diff == 40:
+                    marriage_declarations += 1
+                            
             if done:
+                # Calculate point difference
+                p_agent = env.state.points[env.controlled_player]
+                p_opp = env.state.points[1-env.controlled_player]
+                total_point_diff += (p_agent - p_opp)
+
                 if reward > 0:
                     wins += 1
+                    gp = int(reward)
+                    if gp in game_points_dist:
+                        game_points_dist[gp] += 1
+                    
+                    if talon_closed_in_this_game:
+                        wins_with_talon_close += 1
+                        
                 elif reward < 0:
                     losses += 1
+                    game_points_dist[0] += 1
                 else:
                     draws += 1
+                
+                if talon_closed_in_this_game:
+                    games_with_talon_close += 1
                     
-    return wins, draws, losses
+    win_rate = (wins / (wins + draws + losses)) * 100 if (wins + draws + losses) > 0 else 0
+    
+    metrics = {
+        "update": update_step,
+        "win_rate": win_rate,
+        "wins": wins,
+        "losses": losses,
+        "draws": draws,
+        "gp_3": game_points_dist[3],
+        "gp_2": game_points_dist[2],
+        "gp_1": game_points_dist[1],
+        "marriage_decl_rate": (marriage_declarations / marriage_opportunities) * 100 if marriage_opportunities > 0 else 0,
+        "trump_exchange_rate": (trump_exchanges / num_games) * 100,
+        "talon_close_rate": (talon_closures / num_games) * 100,
+        "talon_close_count": talon_closures,
+        "talon_close_win_rate": (wins_with_talon_close / games_with_talon_close) * 100 if games_with_talon_close > 0 else 0,
+        "avg_point_diff": total_point_diff / num_games,
+        "timestamp": time.time()
+    }
+    
+    return metrics
 
 def train():
     global latest_agent
@@ -187,6 +280,9 @@ def train():
     
     start_time = time.time()
     
+    # Initialize Metrics Logger
+    metrics_logger = MetricsLogger(os.path.join(model_dir, "metrics.jsonl"))
+
     print(f"Starting training loop on {device}...")
     print(f"{'Update':<8} | {'SPS':<8} | {'Win Rate (vs Rnd)':<18} | {'Loss':<8}")
     print("-" * 50)
@@ -207,6 +303,25 @@ def train():
             
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs, legal_actions_mask=current_masks)
+                
+                # DEBUG: FORCE TALON CLOSE with 30% probability if available
+                # This acts as a targeted exploration boost for this specific action
+                force_indices = (current_masks[:, 21] == 1).nonzero(as_tuple=True)[0]
+                if len(force_indices) > 0:
+                    # Create a mask for 20% probability
+                    probs = torch.rand(len(force_indices)).to(device)
+                    to_force = force_indices[probs < 0.2]
+                    
+                    # PROTECT EXCHANGE: If agent chose EXCHANGE (20), do NOT force close
+                    # We want to encourage exchange, not punish it
+                    if len(to_force) > 0:
+                        # Filter out indices where agent chose 20
+                        current_actions = action[to_force]
+                        to_force = to_force[current_actions != 20]
+                        
+                        if len(to_force) > 0:
+                            action[to_force] = 21
+                    
                 values[step] = value.flatten()
             
             actions[step] = action
@@ -238,6 +353,7 @@ def train():
                 advantages[t] = lastgaelam = delta + GAMMA * GAE_LAMBDA * nextnonterminal * lastgaelam
             returns = advantages + values
 
+        # Flatten the batch
         b_obs = obs.reshape((-1, OBSERVATION_SIZE))
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape(-1)
@@ -252,7 +368,7 @@ def train():
             for start in range(0, NUM_STEPS * NUM_ENVS, MINIBATCH_SIZE):
                 end = start + MINIBATCH_SIZE
                 mb_inds = b_inds[start:end]
-                
+
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
@@ -294,9 +410,9 @@ def train():
         # Evaluation
         win_rate_str = "-"
         if update % args.eval_freq == 0:
-            w, d, l = evaluate_vs_random(agent, num_games=100)
-            win_rate = (w / (w + d + l)) * 100
-            win_rate_str = f"{win_rate:.1f}%"
+            metrics = evaluate_detailed(agent, update, num_games=100)
+            metrics_logger.log(metrics)
+            win_rate_str = f"{metrics['win_rate']:.1f}%"
             
         # Checkpointing
         if update % args.save_freq == 0:
