@@ -21,9 +21,9 @@ device = torch.device("cuda")
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-envs", type=int, default=256, help="Number of parallel environments")
+    parser.add_argument("--num-envs", type=int, default=1024, help="Number of parallel environments")
     parser.add_argument("--hidden-size", type=int, default=1024, help="Hidden layer size")
-    parser.add_argument("--total-timesteps", type=int, default=2000000, help="Total timesteps")
+    parser.add_argument("--total-timesteps", type=int, default=10000000, help="Total timesteps")
     parser.add_argument("--benchmark", action="store_true", help="Run in benchmark mode (short duration)")
     parser.add_argument("--eval-freq", type=int, default=10, help="Evaluate every N updates")
     parser.add_argument("--exp-name", type=str, default="snapszer_ppo", help="Experiment name for saving models")

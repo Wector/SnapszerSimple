@@ -4,7 +4,7 @@ import time
 
 # Grid search space
 NUM_ENVS_OPTIONS = [1024, 2048, 4096, 8192, 16384]
-HIDDEN_SIZE_OPTIONS = [512, 1024]
+HIDDEN_SIZE_OPTIONS = [1024, 2048, 4096]
 
 best_sps = 0
 best_config = None
